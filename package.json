@@ -1,0 +1,33 @@
+{
+  "name": "educational-credentials",
+  "version": "1.0.0",
+  "description": "Cryptographically Anchored Educational Credentials - Decentralized Framework for SDG 4 Quality Education",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "seed:local": "hardhat run scripts/seed.js --network localhost"
+  },
+  "keywords": [
+    "blockchain",
+    "ethereum",
+    "solidity",
+    "soulbound",
+    "erc5192",
+    "sdg4",
+    "education"
+  ],
+  "author": "Undergraduate Engineering Project",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.11.1",
+    "hardhat": "^2.22.2"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2"
+  }
+}
