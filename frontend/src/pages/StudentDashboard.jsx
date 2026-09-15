@@ -58,14 +58,16 @@ export const StudentDashboard = () => {
       for (const id of tokenIds) {
         try {
           const cred = await contract.getCredential(id);
-          let meta = demoFixtures[id - 1] || null;
-
-          if (!meta && cred.metadataURI) {
+          let meta = null;
+          if (cred.metadataURI) {
             try {
               meta = await fetchMetadataFromIPFS(cred.metadataURI);
             } catch (mErr) {
               console.warn(`Could not load metadata for token ${id}:`, mErr);
             }
+          }
+          if (!meta) {
+            meta = demoFixtures.find(f => f.metadataURI === cred.metadataURI) || demoFixtures[id - 1] || null;
           }
 
           list.push({

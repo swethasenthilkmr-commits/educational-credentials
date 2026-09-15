@@ -1,27 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useWeb3 } from '../context/Web3Context';
-import { computeCredentialHash, verifyCredentialHash } from '../services/canonicalHash';
+import { computeCredentialHash } from '../services/canonicalHash';
 import { fetchMetadataFromIPFS } from '../services/ipfsClient';
 import demoFixtures from '../fixtures/demoCredentials.json';
+import contractAddressData from '../contracts/contractAddress.json';
+import contractAbiData from '../contracts/EducationalCredential.json';
 import { VerificationScorecard } from '../components/VerificationScorecard';
+import { ethers } from 'ethers';
 import { 
   ShieldCheck, 
   Search, 
   RefreshCw, 
-  QrCode, 
-  FileCheck2, 
   AlertTriangle, 
-  CheckCircle2, 
-  Building2, 
-  UserCheck, 
-  Lock,
-  Upload
 } from 'lucide-react';
 
 export const VerifierPortal = () => {
   const [searchParams] = useSearchParams();
-  const { contract } = useWeb3();
+  const { contract, contractAddress } = useWeb3();
 
   // Search Inputs
   const [tokenIdInput, setTokenIdInput] = useState('');
@@ -32,11 +28,34 @@ export const VerifierPortal = () => {
   const [error, setError] = useState(null);
   const [verificationResult, setVerificationResult] = useState(null);
 
+  // Helper to ensure an active contract instance even if Web3Context is still connecting
+  const getActiveContract = useCallback(() => {
+    if (contract) return contract;
+    try {
+      let readProvider;
+      if (window.ethereum) {
+        readProvider = new ethers.BrowserProvider(window.ethereum);
+      } else {
+        readProvider = new ethers.JsonRpcProvider('http://127.0.0.1:8545');
+      }
+      const addr = contractAddress || contractAddressData.address;
+      return new ethers.Contract(addr, contractAbiData.abi, readProvider);
+    } catch (e) {
+      console.warn('Could not instantiate fallback contract:', e);
+      return null;
+    }
+  }, [contract, contractAddress]);
+
   // Execute Verification
   const performVerification = useCallback(async (tokenIdToVerify, expectedStudent = '') => {
-    if (!contract) return;
     if (!tokenIdToVerify || isNaN(Number(tokenIdToVerify))) {
       setError('Please enter a valid numeric Token ID.');
+      return;
+    }
+
+    const activeContract = getActiveContract();
+    if (!activeContract) {
+      setError('Blockchain connection is initializing. Please wait a moment and try again.');
       return;
     }
 
@@ -49,7 +68,7 @@ export const VerifierPortal = () => {
       // Step 1: Query smart contract on EVM blockchain
       let cred;
       try {
-        cred = await contract.getCredential(id);
+        cred = await activeContract.getCredential(id);
       } catch (contractErr) {
         throw new Error(`Token ID #${id} does not exist on the blockchain ledger.`);
       }
@@ -68,23 +87,28 @@ export const VerifierPortal = () => {
         ? actualOwner.toLowerCase() === cleanExpected 
         : true;
 
-      // Step 2: Fetch metadata from IPFS
+      // Step 2: Fetch metadata from IPFS or localStorage cache
       let metadata = null;
       let metadataRetrieved = false;
 
-      // Check demo fixtures first for offline viva robustness
-      if (demoFixtures[id - 1]) {
-        metadata = demoFixtures[id - 1];
-        metadataRetrieved = true;
-      }
-
-      if (!metadata && metadataURI) {
+      if (metadataURI) {
         try {
           metadata = await fetchMetadataFromIPFS(metadataURI);
           metadataRetrieved = true;
         } catch (ipfsErr) {
-          console.warn('IPFS retrieval failed:', ipfsErr);
-          metadataRetrieved = false;
+          console.warn('IPFS retrieval failed, checking fallback fixtures:', ipfsErr);
+        }
+      }
+
+      // If IPFS failed or returned null, try fixture lookup by URI or by token ID
+      if (!metadata) {
+        const fixtureByUri = demoFixtures.find(f => f.metadataURI === metadataURI);
+        if (fixtureByUri) {
+          metadata = fixtureByUri;
+          metadataRetrieved = true;
+        } else if (demoFixtures[id - 1]) {
+          metadata = demoFixtures[id - 1];
+          metadataRetrieved = true;
         }
       }
 
@@ -93,13 +117,22 @@ export const VerifierPortal = () => {
       let hashMatched = false;
 
       if (metadata) {
-        // Ensure student address matches actual owner in canonical form
+        // Test canonical hash using actual on-chain owner address
         const docForHashing = {
           ...metadata,
           studentAddress: actualOwner,
         };
         computedHash = computeCredentialHash(docForHashing);
         hashMatched = computedHash.toLowerCase() === onChainHash.toLowerCase();
+
+        // Fallback: If hash didn't match, test with original metadata studentAddress if different
+        if (!hashMatched && metadata.studentAddress && metadata.studentAddress.toLowerCase() !== actualOwner.toLowerCase()) {
+          const altHash = computeCredentialHash(metadata);
+          if (altHash.toLowerCase() === onChainHash.toLowerCase()) {
+            computedHash = altHash;
+            hashMatched = true;
+          }
+        }
       }
 
       setVerificationResult({
@@ -126,7 +159,7 @@ export const VerifierPortal = () => {
     } finally {
       setIsVerifying(false);
     }
-  }, [contract]);
+  }, [getActiveContract]);
 
   // Read URL query parameters on initial mount (e.g. from QR scan)
   useEffect(() => {
@@ -203,27 +236,27 @@ export const VerifierPortal = () => {
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
             {/* Quick Chips */}
             <div className="flex items-center gap-1.5 text-xs text-slate-500">
-              <span className="font-semibold">Quick Demo Verification:</span>
+              <span className="font-semibold">Quick Verification:</span>
               <button
                 type="button"
                 onClick={() => handleQuickLookup(1)}
-                className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-mono transition"
+                className="px-2.5 py-1 bg-slate-100 hover:bg-edu-50 hover:text-edu-700 text-slate-700 rounded-lg text-[11px] font-mono transition border border-slate-200"
               >
-                #1 Degree
+                Token #1
               </button>
               <button
                 type="button"
                 onClick={() => handleQuickLookup(2)}
-                className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-mono transition"
+                className="px-2.5 py-1 bg-slate-100 hover:bg-edu-50 hover:text-edu-700 text-slate-700 rounded-lg text-[11px] font-mono transition border border-slate-200"
               >
-                #2 Diploma
+                Token #2
               </button>
               <button
                 type="button"
                 onClick={() => handleQuickLookup(3)}
-                className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-mono transition"
+                className="px-2.5 py-1 bg-slate-100 hover:bg-edu-50 hover:text-edu-700 text-slate-700 rounded-lg text-[11px] font-mono transition border border-slate-200"
               >
-                #3 B.Sc
+                Token #3
               </button>
             </div>
 

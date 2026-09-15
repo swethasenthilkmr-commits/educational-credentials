@@ -60,14 +60,17 @@ export const IssuerDashboard = () => {
           if (isRevoked) revokedCount++;
           else activeCount++;
 
-          // Attempt to fetch metadata from IPFS or local fixture
-          let meta = demoFixtures[id - 1] || null;
-          if (!meta && cred.metadataURI) {
+          // Attempt to fetch real metadata from IPFS URI first
+          let meta = null;
+          if (cred.metadataURI) {
             try {
               meta = await fetchMetadataFromIPFS(cred.metadataURI);
             } catch (err) {
               console.warn(`Could not fetch metadata for token ${id}:`, err);
             }
+          }
+          if (!meta) {
+            meta = demoFixtures.find(f => f.metadataURI === cred.metadataURI) || demoFixtures[id - 1] || null;
           }
 
           list.push({

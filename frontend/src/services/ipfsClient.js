@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import demoCredentials from '../fixtures/demoCredentials.json';
 
 // Fallback in-memory storage for demo session
 const localIpfsCache = new Map();
@@ -57,6 +58,7 @@ export async function uploadMetadataToIPFS(metadata) {
         const data = await res.json();
         const cid = data.IpfsHash;
         saveToLocalStorage(cid, metadata);
+        localIpfsCache.set(cid, metadata);
         return {
           cid,
           uri: `ipfs://${cid}`,
@@ -75,7 +77,7 @@ export async function uploadMetadataToIPFS(metadata) {
   const hashBytes = ethers.sha256(ethers.toUtf8Bytes(jsonStr));
   const pseudoCid = 'bafkrei' + hashBytes.slice(2, 54);
 
-  // Store in cache
+  // Store in cache and localStorage
   localIpfsCache.set(pseudoCid, metadata);
   saveToLocalStorage(pseudoCid, metadata);
 
@@ -96,45 +98,63 @@ export async function uploadMetadataToIPFS(metadata) {
 export async function fetchMetadataFromIPFS(ipfsUri) {
   if (!ipfsUri) throw new Error('Missing IPFS URI');
 
-  const cid = ipfsUri.replace(/^ipfs:\/\//, '').trim();
+  const cleanUri = ipfsUri.trim();
+  const cid = cleanUri.replace(/^ipfs:\/\//, '').trim();
 
   // 1. Check local in-memory cache
   if (localIpfsCache.has(cid)) {
     return localIpfsCache.get(cid);
   }
+  if (localIpfsCache.has(cleanUri)) {
+    return localIpfsCache.get(cleanUri);
+  }
 
   // 2. Check browser localStorage
-  const localData = getFromLocalStorage(cid);
+  const localData = getFromLocalStorage(cid) || getFromLocalStorage(cleanUri);
   if (localData) {
     localIpfsCache.set(cid, localData);
     return localData;
   }
 
-  // 3. Attempt public gateways
-  const gateways = [
-    `https://gateway.pinata.cloud/ipfs/${cid}`,
-    `https://ipfs.io/ipfs/${cid}`,
-    `https://cloudflare-ipfs.com/ipfs/${cid}`,
-  ];
+  // 3. Check fixtures by metadataURI match or CID match (Instant offline viva support)
+  const fixtureMatch = demoCredentials.find(
+    (f) => f.metadataURI === cleanUri || 
+           f.metadataURI === ipfsUri ||
+           (f.metadataURI && f.metadataURI.includes(cid))
+  );
+  if (fixtureMatch) {
+    localIpfsCache.set(cid, fixtureMatch);
+    saveToLocalStorage(cid, fixtureMatch);
+    return fixtureMatch;
+  }
 
-  for (const gw of gateways) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 second timeout
+  // 4. Attempt public gateways (only for non-simulated CIDs)
+  if (!cid.startsWith('bafkrei')) {
+    const gateways = [
+      `https://gateway.pinata.cloud/ipfs/${cid}`,
+      `https://ipfs.io/ipfs/${cid}`,
+      `https://cloudflare-ipfs.com/ipfs/${cid}`,
+    ];
 
-      const res = await fetch(gw, { signal: controller.signal });
-      clearTimeout(timeoutId);
+    for (const gw of gateways) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
 
-      if (res.ok) {
-        const data = await res.json();
-        saveToLocalStorage(cid, data);
-        localIpfsCache.set(cid, data);
-        return data;
+        const res = await fetch(gw, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const data = await res.json();
+          saveToLocalStorage(cid, data);
+          localIpfsCache.set(cid, data);
+          return data;
+        }
+      } catch (e) {
+        // Try next gateway
       }
-    } catch (e) {
-      // Continue to next gateway
     }
   }
 
-  throw new Error(`Unable to resolve IPFS CID: ${cid} across public gateways or local cache.`);
+  throw new Error(`Unable to resolve IPFS CID: ${cid} across local cache or public gateways.`);
 }

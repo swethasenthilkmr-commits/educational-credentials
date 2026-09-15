@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { ethers } from 'ethers';
 import contractAddressData from '../contracts/contractAddress.json';
 import contractAbiData from '../contracts/EducationalCredential.json';
@@ -31,20 +31,34 @@ export const Web3Provider = ({ children }) => {
   const [error, setError] = useState(null);
   const [contractAddress, setContractAddress] = useState(contractAddressData.address || '');
 
+  // Keep a ref to the latest contract for event callbacks without re-triggering effects
+  const contractRef = useRef(null);
+  contractRef.current = contract;
+
   // Initialize read-only provider and contract
   const initReadOnlyContract = useCallback(() => {
     try {
-      const rpcUrl = import.meta.env.VITE_RPC_URL || 'http://127.0.0.1:8545';
-      const readProvider = new ethers.JsonRpcProvider(rpcUrl);
-      const readContract = new ethers.Contract(
-        contractAddress,
-        contractAbiData.abi,
-        readProvider
-      );
-      setContract(readContract);
+      let readProvider;
+      if (window.ethereum) {
+        readProvider = new ethers.BrowserProvider(window.ethereum);
+      } else {
+        const rpcUrl = import.meta.env.VITE_RPC_URL || 'http://127.0.0.1:8545';
+        readProvider = new ethers.JsonRpcProvider(rpcUrl);
+      }
+
+      if (contractAddress && contractAbiData.abi) {
+        const readContract = new ethers.Contract(
+          contractAddress,
+          contractAbiData.abi,
+          readProvider
+        );
+        setContract(readContract);
+        return readContract;
+      }
     } catch (e) {
       console.warn('Could not initialize read-only contract:', e);
     }
+    return null;
   }, [contractAddress]);
 
   // Check roles for the current account
@@ -63,8 +77,8 @@ export const Web3Provider = ({ children }) => {
         activeContract.hasRole(DEFAULT_ADMIN_ROLE, userAddress).catch(() => false),
       ]);
 
-      setIsIssuer(hasIssuer);
-      setIsAdmin(hasAdmin);
+      setIsIssuer(Boolean(hasIssuer));
+      setIsAdmin(Boolean(hasAdmin));
     } catch (e) {
       console.warn('Error checking contract roles:', e);
       setIsIssuer(false);
@@ -133,7 +147,6 @@ export const Web3Provider = ({ children }) => {
         params: [{ chainId: hexChainId }],
       });
     } catch (switchError) {
-      // Chain not added to MetaMask
       if (switchError.code === 4902 && targetChainId === 31337) {
         await window.ethereum.request({
           method: 'wallet_addEthereumChain',
@@ -152,41 +165,83 @@ export const Web3Provider = ({ children }) => {
     }
   };
 
-  // Listen for account / network changes in MetaMask
+  // Eager Auto-Connect if wallet is already unlocked
   useEffect(() => {
-    if (window.ethereum) {
-      const handleAccountsChanged = async (accounts) => {
-        if (accounts.length === 0) {
-          disconnectWallet();
-        } else {
+    if (!window.ethereum) return;
+
+    let isMounted = true;
+    window.ethereum.request({ method: 'eth_accounts' })
+      .then(async (accounts) => {
+        if (!isMounted || !accounts || accounts.length === 0) {
+          initReadOnlyContract();
+          return;
+        }
+
+        try {
+          const browserProvider = new ethers.BrowserProvider(window.ethereum);
+          const network = await browserProvider.getNetwork();
+          const userSigner = await browserProvider.getSigner();
+          const currentChainId = Number(network.chainId);
+
+          if (!isMounted) return;
           setAccount(accounts[0]);
-          if (contract) {
-            await checkRoles(contract, accounts[0]);
+          setChainId(currentChainId);
+          setProvider(browserProvider);
+          setSigner(userSigner);
+
+          if (contractAddress && contractAbiData.abi) {
+            const activeContract = new ethers.Contract(
+              contractAddress,
+              contractAbiData.abi,
+              userSigner
+            );
+            setContract(activeContract);
+            await checkRoles(activeContract, accounts[0]);
           }
+        } catch (e) {
+          console.warn('Auto-connect setup error:', e);
+          initReadOnlyContract();
         }
-      };
+      })
+      .catch(() => {
+        initReadOnlyContract();
+      });
 
-      const handleChainChanged = (newChainId) => {
-        setChainId(Number(newChainId));
-        window.location.reload();
-      };
+    return () => {
+      isMounted = false;
+    };
+  }, [contractAddress, checkRoles, initReadOnlyContract]);
 
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
-      window.ethereum.on('chainChanged', handleChainChanged);
-
-      return () => {
-        if (window.ethereum.removeListener) {
-          window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
-          window.ethereum.removeListener('chainChanged', handleChainChanged);
-        }
-      };
-    }
-  }, [contract, checkRoles]);
-
-  // Initial read-only setup on mount
+  // Single event listener registration on mount (fixes EventEmitter memory leak)
   useEffect(() => {
-    initReadOnlyContract();
-  }, [initReadOnlyContract]);
+    if (!window.ethereum) return;
+
+    const handleAccountsChanged = async (accounts) => {
+      if (!accounts || accounts.length === 0) {
+        disconnectWallet();
+      } else {
+        setAccount(accounts[0]);
+        if (contractRef.current) {
+          await checkRoles(contractRef.current, accounts[0]);
+        }
+      }
+    };
+
+    const handleChainChanged = (newChainId) => {
+      setChainId(Number(newChainId));
+      window.location.reload();
+    };
+
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('chainChanged', handleChainChanged);
+
+    return () => {
+      if (window.ethereum?.removeListener) {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      }
+    };
+  }, [checkRoles]);
 
   // Explorer link generator
   const getExplorerLink = (txOrAddress, type = 'tx') => {
